@@ -116,3 +116,4 @@ def generate_pipeline_report():
 
 if __name__ == "__main__":
     generate_pipeline_report()
+
