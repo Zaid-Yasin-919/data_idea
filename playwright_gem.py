@@ -97,81 +97,76 @@ async def run():
             "input.form-control",
         ]
 
-        for sel in selectors_to_try:
-            loc = page.locator(sel).first
-            if await loc.count() > 0 and await loc.is_visible():
-                search_input = loc
-                print(f"  🔍 Found search input with selector: '{sel}'")
-                break
+        # 2. Iterate through target keywords
+        search_input_sel = "input#searchBid, input[name='searchterm'], input[placeholder*='Search' i], input.form-control"
 
-        # If search input found, perform search for 'brass' or 'trophy'
-        if search_input:
-            search_query = "brass"
-            print(f"  ⌨️ Typing search query: '{search_query}'")
-            await search_input.fill(search_query)
-            await page.keyboard.press("Enter")
-            print("  ⏳ Waiting for search results to update...")
-            await page.wait_for_timeout(5000)
+        for kw in SEARCH_KEYWORDS:
+            print(f"\n  🔍 Searching for keyword: '{kw}'")
+            search_input = page.locator(search_input_sel).first
 
-        # 3. Look for bid cards on page
-        print("\n🔍 Extracting Bid Cards from rendered DOM...")
-        # Common containers for GeM bids: div.border, div.card, div.bid-card, div with 'GEM/'
-        page_content = await page.content()
+            if await search_input.count() > 0 and await search_input.is_visible():
+                await search_input.fill("")
+                await search_input.fill(kw)
+                await page.keyboard.press("Enter")
+                print(f"     ⏳ Waiting for '{kw}' results to render...")
+                await page.wait_for_timeout(4500)
+            else:
+                print("     ⚠ Search input not visible, skipping to DOM check...")
 
-        # Let's inspect elements containing 'GEM/' or 'Bid No'
-        bid_elements = page.locator(".card, .border.block, .bid-card, div.col-md-12:has-text('GEM/')")
-        card_count = await bid_elements.count()
-
-        if card_count == 0:
-            # Fallback locator: look for any block containing 'GEM/'
-            bid_elements = page.locator("div:has-text('GEM/'):not(:has(div:has-text('GEM/')))")
+            # Extract cards for this keyword
+            bid_elements = page.locator(".card, .border.block, .bid-card, div.col-md-12:has-text('GEM/')")
             card_count = await bid_elements.count()
 
-        print(f"  Found {card_count} candidate bid blocks on page")
+            if card_count == 0:
+                bid_elements = page.locator("div:has-text('GEM/'):not(:has(div:has-text('GEM/')))")
+                card_count = await bid_elements.count()
 
-        # Parse text of cards
-        for i in range(min(card_count, MAX_BIDS * 2)):
-            if len(extracted_bids) >= MAX_BIDS:
-                break
+            print(f"     Found {card_count} candidate bid blocks for '{kw}'")
 
-            elem = bid_elements.nth(i)
-            text = (await elem.inner_text()).strip()
+            kw_captured = 0
+            for i in range(min(card_count, 12)):
+                if kw_captured >= 4:
+                    break
 
-            # Verify it's a real bid card by checking for GEM/ or Bid Number
-            bid_no_match = re.search(r"GEM/\d{4}/[B|R]/\d+", text)
-            if not bid_no_match and "bid no" not in text.lower():
-                continue
+                elem = bid_elements.nth(i)
+                text = (await elem.inner_text()).strip()
 
-            bid_id = bid_no_match.group(0) if bid_no_match else "Unknown"
+                bid_no_match = re.search(r"GEM/\d{4}/[B|R]/\d+", text)
+                if not bid_no_match and "bid no" not in text.lower():
+                    continue
 
-            # Parse key fields using regex patterns
-            items_match = re.search(r"Items?:\s*(.*?)(?:\n|Quantity|$)", text, re.I)
-            qty_match = re.search(r"Quantity:\s*(\d+)", text, re.I)
-            dept_match = re.search(r"Department Name And Address:\s*(.*?)(?:\n|Start Date|$)", text, re.I)
-            end_date_match = re.search(r"End Date:\s*(.*?)(?:\n|$)", text, re.I)
+                bid_id = bid_no_match.group(0) if bid_no_match else "Unknown"
 
-            # Try to grab download / detail link
-            link_elem = elem.locator("a[href*='bid']").first
-            bid_url = None
-            if await link_elem.count() > 0:
-                href = await link_elem.get_attribute("href")
-                if href:
-                    bid_url = href if href.startswith("http") else f"https://bidplus.gem.gov.in{href}"
+                # Parse key fields using regex patterns
+                items_match = re.search(r"Items?:\s*(.*?)(?:\n|Quantity|$)", text, re.I)
+                qty_match = re.search(r"Quantity:\s*(\d+)", text, re.I)
+                dept_match = re.search(r"Department Name And Address:\s*(.*?)(?:\n|Start Date|$)", text, re.I)
+                end_date_match = re.search(r"End Date:\s*(.*?)(?:\n|$)", text, re.I)
 
-            bid_record = {
-                "bid_id": bid_id,
-                "items": items_match.group(1).strip() if items_match else None,
-                "quantity": qty_match.group(1).strip() if qty_match else None,
-                "department": dept_match.group(1).strip() if dept_match else None,
-                "end_date": end_date_match.group(1).strip() if end_date_match else None,
-                "link": bid_url,
-                "raw_preview": text[:250].replace("\n", " | "),
-            }
+                # Detail link
+                link_elem = elem.locator("a[href*='bid']").first
+                bid_url = None
+                if await link_elem.count() > 0:
+                    href = await link_elem.get_attribute("href")
+                    if href:
+                        bid_url = href if href.startswith("http") else f"https://bidplus.gem.gov.in{href}"
 
-            # Avoid duplicates
-            if not any(b["bid_id"] == bid_id for b in extracted_bids if bid_id != "Unknown"):
-                extracted_bids.append(bid_record)
-                print(f"    ⭐ Captured Bid: {bid_id} | {bid_record['items'] or 'Items listed'}")
+                bid_record = {
+                    "bid_id": bid_id,
+                    "search_keyword": kw,
+                    "items": items_match.group(1).strip() if items_match else None,
+                    "quantity": qty_match.group(1).strip() if qty_match else None,
+                    "department": dept_match.group(1).strip() if dept_match else None,
+                    "end_date": end_date_match.group(1).strip() if end_date_match else None,
+                    "link": bid_url,
+                    "raw_preview": text[:250].replace("\n", " | "),
+                }
+
+                # Avoid duplicates
+                if not any(b["bid_id"] == bid_id for b in extracted_bids if bid_id != "Unknown"):
+                    extracted_bids.append(bid_record)
+                    kw_captured += 1
+                    print(f"       ⭐ [{kw.upper()}] Captured: {bid_id} | {bid_record['items'] or 'Items'}")
 
         # If zero cards matched specific selectors, fallback to raw regex search across page text
         if not extracted_bids:
