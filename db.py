@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
 """
-Database manager for the Moradabad B2B Matchmaking Pipeline.
-Handles SQLite connection, schema initialization, and transactional upserts
-for Organizations, Officers, Intent Signals, and Line Items.
+Universal Database Manager for Indian Business & Procurement Intelligence.
+Handles SQLite operations for:
+  - organizations (Companies, LLPs, Ministries, PSUs, MSMEs)
+  - directors_officers (Company Directors, DIN, Signatories)
+  - tenders (GeM, CPPP, and State Procurement Bids)
+  - tender_items (Granular products and services demanded)
+  - industrial_plants (Manufacturing units, factories, industrial areas)
 """
 
 import json
@@ -25,8 +29,8 @@ def get_db_connection() -> sqlite3.Connection:
     return conn
 
 
-def init_db():
-    """Initializes SQLite database tables from schema.sql."""
+def init_db(drop_existing: bool = False):
+    """Initializes or resets SQLite database tables from schema.sql."""
     if not SCHEMA_PATH.exists():
         raise FileNotFoundError(f"Schema file not found at {SCHEMA_PATH}")
 
@@ -34,6 +38,12 @@ def init_db():
         schema_sql = f.read()
 
     with get_db_connection() as conn:
+        if drop_existing:
+            tables = ["tender_items", "tenders", "directors_officers", "industrial_plants", "organizations"]
+            for t in tables:
+                conn.execute(f"DROP TABLE IF EXISTS {t};")
+            conn.commit()
+
         conn.executescript(schema_sql)
         conn.commit()
 
@@ -41,54 +51,64 @@ def init_db():
 
 
 # -----------------------------------------------------------------------------
-# 1. Organizations Upsert
+# 1. Organizations (Companies, Ministries, MSMEs)
 # -----------------------------------------------------------------------------
 def upsert_organization(
     name: str,
-    org_type: str = "other",
+    entity_type: str = "other",
     cin: Optional[str] = None,
-    gst_number: Optional[str] = None,
+    gstin: Optional[str] = None,
     pan: Optional[str] = None,
-    udyam_reg_number: Optional[str] = None,
+    udyam_number: Optional[str] = None,
+    nic_code: Optional[str] = None,
     industrial_classification: Optional[str] = None,
-    business_activity: Optional[str] = None,
-    address: Optional[str] = None,
+    business_activity_description: Optional[str] = None,
+    registered_address: Optional[str] = None,
     city: Optional[str] = None,
     district: Optional[str] = None,
     state: Optional[str] = None,
     pincode: Optional[str] = None,
-    phone: Optional[str] = None,
     email: Optional[str] = None,
+    phone: Optional[str] = None,
     website: Optional[str] = None,
     incorporation_date: Optional[str] = None,
     authorized_capital: Optional[float] = None,
     paid_up_capital: Optional[float] = None,
     company_status: str = "Active",
+    roc_code: Optional[str] = None,
+    source_origin: str = "unknown",
+    raw_metadata: Optional[Dict[str, Any]] = None,
 ) -> int:
     """
-    Inserts or finds an existing organization based on CIN, GSTIN, or name.
+    Inserts or finds an existing organization based on CIN, GSTIN, Udyam, or Name.
     Returns the organization ID.
     """
     name_clean = name.strip()
+    raw_json = json.dumps(raw_metadata) if raw_metadata else None
 
     with get_db_connection() as conn:
         cursor = conn.cursor()
 
-        # Check by CIN first (if available)
+        # Check existing by unique identifiers
         if cin:
-            cursor.execute("SELECT id FROM organizations WHERE cin = ?", (cin,))
+            cursor.execute("SELECT id FROM organizations WHERE cin = ?", (cin.strip(),))
             row = cursor.fetchone()
             if row:
                 return row["id"]
 
-        # Check by GSTIN (if available)
-        if gst_number:
-            cursor.execute("SELECT id FROM organizations WHERE gst_number = ?", (gst_number,))
+        if gstin:
+            cursor.execute("SELECT id FROM organizations WHERE gstin = ?", (gstin.strip(),))
             row = cursor.fetchone()
             if row:
                 return row["id"]
 
-        # Check by normalized name
+        if udyam_number:
+            cursor.execute("SELECT id FROM organizations WHERE udyam_number = ?", (udyam_number.strip(),))
+            row = cursor.fetchone()
+            if row:
+                return row["id"]
+
+        # Fallback to normalized name
         cursor.execute("SELECT id FROM organizations WHERE LOWER(name) = LOWER(?)", (name_clean,))
         row = cursor.fetchone()
         if row:
@@ -98,17 +118,21 @@ def upsert_organization(
         cursor.execute(
             """
             INSERT INTO organizations (
-                name, org_type, cin, gst_number, pan, udyam_reg_number,
-                industrial_classification, business_activity, address,
-                city, district, state, pincode, phone, email, website,
-                incorporation_date, authorized_capital, paid_up_capital, company_status
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                name, entity_type, cin, gstin, pan, udyam_number,
+                nic_code, industrial_classification, business_activity_description,
+                registered_address, city, district, state, pincode,
+                email, phone, website,
+                incorporation_date, authorized_capital, paid_up_capital,
+                company_status, roc_code, source_origin, raw_metadata
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                name_clean, org_type, cin, gst_number, pan, udyam_reg_number,
-                industrial_classification, business_activity, address,
-                city, district, state, pincode, phone, email, website,
-                incorporation_date, authorized_capital, paid_up_capital, company_status
+                name_clean, entity_type, cin, gstin, pan, udyam_number,
+                nic_code, industrial_classification, business_activity_description,
+                registered_address, city, district, state, pincode,
+                email, phone, website,
+                incorporation_date, authorized_capital, paid_up_capital,
+                company_status, roc_code, source_origin, raw_json
             ),
         )
         conn.commit()
@@ -116,50 +140,58 @@ def upsert_organization(
 
 
 # -----------------------------------------------------------------------------
-# 2. Organization Officers (Directors, Procurement Managers)
+# 2. Directors & Officers
 # -----------------------------------------------------------------------------
-def add_organization_officer(
+def add_director_officer(
     organization_id: int,
     name: str,
     designation: Optional[str] = None,
     din: Optional[str] = None,
+    pan: Optional[str] = None,
     phone: Optional[str] = None,
     email: Optional[str] = None,
+    appointment_date: Optional[str] = None,
+    is_active: int = 1,
 ) -> int:
     """Adds a director/officer to an organization."""
     with get_db_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(
             """
-            INSERT INTO organization_officers (
-                organization_id, name, designation, din, phone, email
-            ) VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO directors_officers (
+                organization_id, name, designation, din, pan, phone, email,
+                appointment_date, is_active
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (organization_id, name.strip(), designation, din, phone, email),
+            (organization_id, name.strip(), designation, din, pan, phone, email, appointment_date, is_active),
         )
         conn.commit()
         return cursor.lastrowid
 
 
 # -----------------------------------------------------------------------------
-# 3. Intent Signals Upsert
+# 3. Tenders & Procurement Bids
 # -----------------------------------------------------------------------------
-def upsert_intent_signal(
+def upsert_tender(
     source: str,
-    source_ref_id: str,
+    bid_number: str,
+    title: str,
     organization_id: Optional[int] = None,
-    title: Optional[str] = None,
-    signal_type: str = "tender_bid",
-    signal_status: str = "detected",
-    intent_score: float = 0.5,
-    published_date: Optional[str] = None,
+    description: Optional[str] = None,
+    bid_type: str = "goods",
+    estimated_value: Optional[float] = None,
+    currency: str = "INR",
+    publishing_date: Optional[str] = None,
     closing_date: Optional[str] = None,
-    source_url: Optional[str] = None,
+    opening_date: Optional[str] = None,
+    status: str = "active",
+    consignee_location: Optional[str] = None,
+    document_url: Optional[str] = None,
     raw_payload: Optional[Dict[str, Any]] = None,
 ) -> int:
     """
-    Inserts a new intent signal or updates an existing one matching (source, source_ref_id).
-    Returns the signal ID.
+    Inserts a new tender or updates an existing one matching (source, bid_number).
+    Returns the tender ID.
     """
     payload_json = json.dumps(raw_payload) if raw_payload else None
 
@@ -167,23 +199,26 @@ def upsert_intent_signal(
         cursor = conn.cursor()
         cursor.execute(
             """
-            INSERT INTO intent_signals (
-                organization_id, source, source_ref_id, title,
-                signal_type, signal_status, intent_score,
-                published_date, closing_date, source_url, raw_payload
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(source, source_ref_id) DO UPDATE SET
-                signal_status = excluded.signal_status,
-                intent_score = excluded.intent_score,
-                closing_date = COALESCE(excluded.closing_date, intent_signals.closing_date),
-                source_url = COALESCE(excluded.source_url, intent_signals.source_url),
-                raw_payload = COALESCE(excluded.raw_payload, intent_signals.raw_payload)
+            INSERT INTO tenders (
+                organization_id, source, bid_number, title, description,
+                bid_type, estimated_value, currency,
+                publishing_date, closing_date, opening_date, status,
+                consignee_location, document_url, raw_payload
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(source, bid_number) DO UPDATE SET
+                title = excluded.title,
+                status = excluded.status,
+                closing_date = COALESCE(excluded.closing_date, tenders.closing_date),
+                document_url = COALESCE(excluded.document_url, tenders.document_url),
+                raw_payload = COALESCE(excluded.raw_payload, tenders.raw_payload),
+                updated_at = CURRENT_TIMESTAMP
             RETURNING id;
             """,
             (
-                organization_id, source, source_ref_id, title,
-                signal_type, signal_status, intent_score,
-                published_date, closing_date, source_url, payload_json
+                organization_id, source, bid_number.strip(), title.strip(), description,
+                bid_type, estimated_value, currency,
+                publishing_date, closing_date, opening_date, status,
+                consignee_location, document_url, payload_json
             ),
         )
         row = cursor.fetchone()
@@ -192,31 +227,34 @@ def upsert_intent_signal(
 
 
 # -----------------------------------------------------------------------------
-# 4. Signal Items (Granular Demand Items)
+# 4. Tender Items
 # -----------------------------------------------------------------------------
-def add_signal_item(
-    signal_id: int,
-    item_title: str,
-    category: str = "other",
-    material: str = "unknown",
-    quantity: Optional[int] = None,
-    unit: str = "pieces",
-    estimated_budget: Optional[float] = None,
+def add_tender_item(
+    tender_id: int,
+    item_name: str,
+    item_category: Optional[str] = None,
     specifications: Optional[str] = None,
+    quantity: Optional[float] = None,
+    unit: str = "units",
+    estimated_unit_price: Optional[float] = None,
+    total_estimated_value: Optional[float] = None,
+    raw_item_payload: Optional[Dict[str, Any]] = None,
 ) -> int:
-    """Adds a granular line-item to an intent signal."""
+    """Inserts a granular product/line-item requested in a tender."""
+    raw_json = json.dumps(raw_item_payload) if raw_item_payload else None
+
     with get_db_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(
             """
-            INSERT INTO signal_items (
-                signal_id, item_title, category, material,
-                quantity, unit, estimated_budget, specifications
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO tender_items (
+                tender_id, item_name, item_category, specifications,
+                quantity, unit, estimated_unit_price, total_estimated_value, raw_item_payload
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                signal_id, item_title.strip(), category, material,
-                quantity, unit, estimated_budget, specifications
+                tender_id, item_name.strip(), item_category, specifications,
+                quantity, unit, estimated_unit_price, total_estimated_value, raw_json
             ),
         )
         conn.commit()
@@ -224,49 +262,97 @@ def add_signal_item(
 
 
 # -----------------------------------------------------------------------------
-# 5. Queries & Stats
+# 5. Industrial Plants & Manufacturing Units
+# -----------------------------------------------------------------------------
+def add_industrial_plant(
+    unit_name: str,
+    organization_id: Optional[int] = None,
+    plant_type: str = "manufacturing",
+    enterprise_category: str = "unclassified",
+    address: Optional[str] = None,
+    industrial_area: Optional[str] = None,
+    district: Optional[str] = None,
+    state: Optional[str] = None,
+    pincode: Optional[str] = None,
+    major_activity: Optional[str] = None,
+    nic_code: Optional[str] = None,
+    investment_in_machinery_lakhs: Optional[float] = None,
+    annual_turnover_lakhs: Optional[float] = None,
+    date_of_commencement: Optional[str] = None,
+    raw_payload: Optional[Dict[str, Any]] = None,
+) -> int:
+    """Inserts a physical factory / manufacturing plant location."""
+    raw_json = json.dumps(raw_payload) if raw_payload else None
+
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO industrial_plants (
+                organization_id, unit_name, plant_type, enterprise_category,
+                address, industrial_area, district, state, pincode,
+                major_activity, nic_code, investment_in_machinery_lakhs,
+                annual_turnover_lakhs, date_of_commencement, raw_payload
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                organization_id, unit_name.strip(), plant_type, enterprise_category,
+                address, industrial_area, district, state, pincode,
+                major_activity, nic_code, investment_in_machinery_lakhs,
+                annual_turnover_lakhs, date_of_commencement, raw_json
+            ),
+        )
+        conn.commit()
+        return cursor.lastrowid
+
+
+# -----------------------------------------------------------------------------
+# 6. Global Queries & Statistics
 # -----------------------------------------------------------------------------
 def get_database_stats() -> Dict[str, int]:
-    """Returns total record counts across all core tables."""
-    tables = ["organizations", "organization_officers", "intent_signals", "signal_items", "qualification_calls"]
+    """Returns row counts across all raw tables."""
+    tables = ["organizations", "directors_officers", "tenders", "tender_items", "industrial_plants"]
     stats = {}
     with get_db_connection() as conn:
         cursor = conn.cursor()
         for t in tables:
-            cursor.execute(f"SELECT COUNT(*) as cnt FROM {t}")
-            stats[t] = cursor.fetchone()["cnt"]
+            try:
+                cursor.execute(f"SELECT COUNT(*) as cnt FROM {t}")
+                stats[t] = cursor.fetchone()["cnt"]
+            except sqlite3.OperationalError:
+                stats[t] = 0
     return stats
 
 
-def get_top_signals(limit: int = 10) -> List[Dict[str, Any]]:
-    """Fetches top intent signals with organization and item summaries."""
+def get_latest_tenders(limit: int = 10, category: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Fetches latest tenders with issuing organization and item details."""
     query = """
     SELECT 
-        s.id,
-        s.source,
-        s.source_ref_id,
-        s.title,
-        s.signal_status,
-        s.intent_score,
-        s.closing_date,
-        s.source_url,
-        o.name AS organization_name,
+        t.id,
+        t.source,
+        t.bid_number,
+        t.title,
+        t.status,
+        t.closing_date,
+        t.document_url,
+        o.name AS issuing_organization,
         o.state AS org_state,
-        COUNT(i.id) AS item_count,
-        GROUP_CONCAT(i.item_title, ' | ') AS items_summary
-    FROM intent_signals s
-    LEFT JOIN organizations o ON s.organization_id = o.id
-    LEFT JOIN signal_items i ON s.id = i.signal_id
-    GROUP BY s.id
-    ORDER BY s.intent_score DESC, s.detected_at DESC
-    LIMIT ?
+        COUNT(ti.id) AS item_count,
+        GROUP_CONCAT(ti.item_name, ' | ') AS items_summary
+    FROM tenders t
+    LEFT JOIN organizations o ON t.organization_id = o.id
+    LEFT JOIN tender_items ti ON t.id = ti.tender_id
+    WHERE (? IS NULL OR ti.item_category = ?)
+    GROUP BY t.id
+    ORDER BY t.created_at DESC
+    LIMIT ?;
     """
     with get_db_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute(query, (limit,))
+        cursor.execute(query, (category, category, limit))
         return [dict(row) for row in cursor.fetchall()]
 
 
 if __name__ == "__main__":
-    init_db()
+    init_db(drop_existing=True)
     print("Database statistics:", get_database_stats())

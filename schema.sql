@@ -1,160 +1,194 @@
 -- ============================================================================
--- Moradabad B2B Matchmaking — Demand & Intent Database Schema
--- Focus: Organizations (Buyers/Gov), Officers/Directors, Intent Signals, & Items
+-- Indian Business, Corporate & Public Procurement Intelligence Schema (SQLite)
+-- Universal Raw Data Layer: Organizations, Directors, Tenders, Items, and Plants
+-- Sector-Agnostic: Handles all industries, ministries, and enterprise categories
 -- ============================================================================
 
 PRAGMA foreign_keys = ON;
 
 -- ----------------------------------------------------------------------------
--- 1. ORGANIZATIONS (Master entity for buyers, government bodies, corporates)
+-- 1. ORGANIZATIONS (Master Entity Directory: MCA Companies, Gov Bodies, MSMEs)
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS organizations (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,                             -- Legal or Department name
-    org_type TEXT CHECK(org_type IN (
-        'government_body', 'private_limited', 'public_limited', 
-        'llp', 'proprietorship', 'partnership', 'wholesaler', 'other'
+    entity_type TEXT CHECK(entity_type IN (
+        'private_limited', 'public_limited', 'llp', 'one_person_company',
+        'government_body', 'public_sector_undertaking', 'msme_unit', 
+        'proprietorship', 'partnership', 'society_trust', 'other'
     )) DEFAULT 'other',
     
-    -- Identifiers
+    -- Universal Business Identifiers
     cin TEXT UNIQUE,                                -- MCA Corporate Identification Number
-    gst_number TEXT UNIQUE,                         -- GSTIN
-    pan TEXT,                                       -- Permanent Account Number
-    udyam_reg_number TEXT UNIQUE,                   -- MSME Udyam Registration Number
+    gstin TEXT UNIQUE,                              -- Goods & Services Tax Identification Number
+    pan TEXT,                                       -- Income Tax PAN
+    udyam_number TEXT UNIQUE,                       -- MSME Udyam Registration Number
     
-    -- Industrial Classification
-    industrial_classification TEXT,                 -- MCA Industry / NIC Code
-    business_activity TEXT,                         -- e.g. "Manufacturing (Metals)", "Trading"
+    -- Industrial Classification (NIC / MCA)
+    nic_code TEXT,                                  -- National Industrial Classification code (2 to 5 digit)
+    industrial_classification TEXT,                 -- e.g. "Manufacturing (Metals)", "Business Services", "Trading"
+    business_activity_description TEXT,             -- Main objects / business description
     
-    -- Address & Geography
-    address TEXT,
+    -- Geography & Registered Office
+    registered_address TEXT,
     city TEXT,
     district TEXT,
     state TEXT,
     pincode TEXT,
     
-    -- Direct Contact Details
-    phone TEXT,
+    -- Contact Points
     email TEXT,
+    phone TEXT,
     website TEXT,
     
-    -- Financials / Registration Info (from MCA)
+    -- Corporate Financials & Status (from MCA / CDM)
     incorporation_date DATE,
     authorized_capital REAL,
     paid_up_capital REAL,
-    company_status TEXT DEFAULT 'Active',           -- 'Active', 'Dormant', 'Strike Off'
+    company_status TEXT DEFAULT 'Active',           -- 'Active', 'Dormant', 'Strike Off', 'Under Liquidation'
+    roc_code TEXT,                                  -- e.g. 'RoC-Delhi', 'RoC-Kanpur', 'RoC-Mumbai'
+    
+    -- Data Source Tracking
+    source_origin TEXT DEFAULT 'unknown',           -- 'mca', 'gem', 'udyam', 'data_gov_in'
+    raw_metadata JSON,                              -- Complete untouched metadata from source
     
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE INDEX IF NOT EXISTS idx_org_name ON organizations(name);
-CREATE INDEX IF NOT EXISTS idx_org_state_city ON organizations(state, city);
+CREATE INDEX IF NOT EXISTS idx_org_state_dist ON organizations(state, district);
 CREATE INDEX IF NOT EXISTS idx_org_classification ON organizations(industrial_classification);
+CREATE INDEX IF NOT EXISTS idx_org_nic ON organizations(nic_code);
+CREATE INDEX IF NOT EXISTS idx_org_status ON organizations(company_status);
 
 -- ----------------------------------------------------------------------------
--- 2. ORGANIZATION_OFFICERS (Directors, Signatories, Procurement Officers)
+-- 2. DIRECTORS & OFFICERS (Key Management Personnel & Signatories)
 -- ----------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS organization_officers (
+CREATE TABLE IF NOT EXISTS directors_officers (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     organization_id INTEGER NOT NULL,
     name TEXT NOT NULL,
-    designation TEXT,                               -- 'Director', 'Managing Director', 'Purchase Manager'
+    designation TEXT,                               -- 'Director', 'Managing Director', 'Designated Partner'
     din TEXT,                                       -- Director Identification Number (from MCA)
+    pan TEXT,
     phone TEXT,
     email TEXT,
+    appointment_date DATE,
+    cessation_date DATE,
+    is_active INTEGER DEFAULT 1,                    -- 1 for active, 0 for resigned/inactive
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE
 );
 
-CREATE INDEX IF NOT EXISTS idx_officer_org ON organization_officers(organization_id);
-CREATE INDEX IF NOT EXISTS idx_officer_din ON organization_officers(din);
+CREATE INDEX IF NOT EXISTS idx_officer_org ON directors_officers(organization_id);
+CREATE INDEX IF NOT EXISTS idx_officer_din ON directors_officers(din);
+CREATE INDEX IF NOT EXISTS idx_officer_name ON directors_officers(name);
 
 -- ----------------------------------------------------------------------------
--- 3. INTENT_SIGNALS (Events: GeM Tenders, MCA Incorp, Import Shipments)
+-- 3. TENDERS & PROCUREMENT BIDS (GeM, CPPP, State Portals, Defence, Railways)
 -- ----------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS intent_signals (
+CREATE TABLE IF NOT EXISTS tenders (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    organization_id INTEGER,                        -- Linked organization if identified
+    organization_id INTEGER,                        -- Issuing buyer / ministry / PSU
     source TEXT NOT NULL CHECK(source IN (
-        'gem', 'cppp', 'mca', 'udyam', 'exim', 'manual'
+        'gem', 'cppp', 'state_procurement', 'railways', 'defence', 'other'
     )),
-    source_ref_id TEXT NOT NULL,                    -- e.g. "GEM/2026/B/8120709" or MCA CIN / URN
-    title TEXT,                                     -- Headline summary
+    bid_number TEXT NOT NULL,                       -- e.g. "GEM/2026/B/8120709" or CPPP Tender ID
+    title TEXT NOT NULL,
+    description TEXT,
     
-    signal_type TEXT CHECK(signal_type IN (
-        'tender_bid', 'new_incorporation', 'import_shipment', 'msme_registration'
-    )) DEFAULT 'tender_bid',
+    bid_type TEXT CHECK(bid_type IN (
+        'goods', 'services', 'works', 'custom_bid', 'reverse_auction', 'other'
+    )) DEFAULT 'goods',
     
-    -- Lead Qualification Pipeline
-    signal_status TEXT CHECK(signal_status IN (
-        'detected', 'analyzed', 'call_queued', 'verified_buyer', 'disqualified', 'closed'
-    )) DEFAULT 'detected',
+    -- Values & Currency
+    estimated_value REAL,
+    currency TEXT DEFAULT 'INR',
     
-    intent_score REAL DEFAULT 0.5,                 -- 0.0 (irrelevant) to 1.0 (exact Moradabad fit)
+    -- Procurement Schedule
+    publishing_date TIMESTAMP,
+    closing_date TIMESTAMP,                         -- Submission deadline
+    opening_date TIMESTAMP,                         -- Bid opening date
     
-    -- Timelines
-    detected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    published_date TIMESTAMP,                       -- Tender publish date or incorporation date
-    closing_date TIMESTAMP,                         -- Tender submission deadline
+    -- Current Lifecycle Status
+    status TEXT CHECK(status IN (
+        'active', 'under_evaluation', 'awarded', 'cancelled', 'retendered', 'closed'
+    )) DEFAULT 'active',
     
-    source_url TEXT,                                -- Link to GeM tender document or MCA page
-    raw_payload JSON,                               -- Full verbatim JSON dump from scraper
+    -- Location & Links
+    consignee_location TEXT,                        -- Delivery city/state
+    document_url TEXT,                              -- Direct tender/BOQ download link
+    raw_payload JSON,                               -- Verbatim JSON payload from scraper
     
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE SET NULL
 );
 
--- Unique index prevents duplicate signals across runs
-CREATE UNIQUE INDEX IF NOT EXISTS idx_signal_source_ref ON intent_signals(source, source_ref_id);
-CREATE INDEX IF NOT EXISTS idx_signal_status ON intent_signals(signal_status);
-CREATE INDEX IF NOT EXISTS idx_signal_score ON intent_signals(intent_score DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_tenders_source_bid ON tenders(source, bid_number);
+CREATE INDEX IF NOT EXISTS idx_tenders_closing ON tenders(closing_date);
+CREATE INDEX IF NOT EXISTS idx_tenders_status ON tenders(status);
+CREATE INDEX IF NOT EXISTS idx_tenders_org ON tenders(organization_id);
 
 -- ----------------------------------------------------------------------------
--- 4. SIGNAL_ITEMS (Granular products / line items demanded in a signal)
+-- 4. TENDER_ITEMS (Granular Products, Materials & Services Requested)
 -- ----------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS signal_items (
+CREATE TABLE IF NOT EXISTS tender_items (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    signal_id INTEGER NOT NULL,
-    item_title TEXT NOT NULL,                       -- e.g. "BRASS STRIPS 1.00 mm"
-    category TEXT CHECK(category IN (
-        'trophy_memento', 'statue_figure', 'home_decor', 
-        'hardware_fitting', 'raw_material_metal', 'gifting', 'other'
-    )) DEFAULT 'other',
-    
-    material TEXT CHECK(material IN (
-        'brass', 'aluminium', 'iron', 'copper', 'metal_alloy', 'non_metal', 'unknown'
-    )) DEFAULT 'unknown',
-    
-    quantity INTEGER,
-    unit TEXT DEFAULT 'pieces',                     -- 'pieces', 'sets', 'kg', 'nos'
-    estimated_budget REAL,
-    specifications TEXT,
+    tender_id INTEGER NOT NULL,
+    item_name TEXT NOT NULL,                        -- e.g. "Desktop Computers", "Brass Strips", "PVC Pipes"
+    item_category TEXT,                             -- Broad sector / category
+    specifications TEXT,                            -- Technical parameters / BOQ notes
+    quantity REAL,
+    unit TEXT DEFAULT 'units',                      -- 'pieces', 'kg', 'metric_ton', 'meters', 'sets', etc.
+    estimated_unit_price REAL,
+    total_estimated_value REAL,
+    raw_item_payload JSON,
     
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (signal_id) REFERENCES intent_signals(id) ON DELETE CASCADE
+    FOREIGN KEY (tender_id) REFERENCES tenders(id) ON DELETE CASCADE
 );
 
-CREATE INDEX IF NOT EXISTS idx_item_category ON signal_items(category);
-CREATE INDEX IF NOT EXISTS idx_item_material ON signal_items(material);
+CREATE INDEX IF NOT EXISTS idx_tender_items_tender ON tender_items(tender_id);
+CREATE INDEX IF NOT EXISTS idx_tender_items_category ON tender_items(item_category);
+CREATE INDEX IF NOT EXISTS idx_tender_items_name ON tender_items(item_name);
 
 -- ----------------------------------------------------------------------------
--- 5. QUALIFICATION_CALLS (Audit log of buyer verification calls)
+-- 5. INDUSTRIAL_PLANTS (Physical Factories, MSME Units & Industrial Footprints)
 -- ----------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS qualification_calls (
+CREATE TABLE IF NOT EXISTS industrial_plants (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    organization_id INTEGER,
-    signal_id INTEGER,
-    contacted_person TEXT,
-    phone_dialed TEXT NOT NULL,
-    call_outcome TEXT CHECK(call_outcome IN (
-        'verified_ready_to_buy', 'verified_future_requirement', 
-        'procuring_elsewhere', 'no_requirement', 'unreachable', 'wrong_number'
-    )) NOT NULL,
-    verified_budget REAL,
-    verified_timeline TEXT,
-    notes TEXT,
-    called_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE SET NULL,
-    FOREIGN KEY (signal_id) REFERENCES intent_signals(id) ON DELETE SET NULL
+    organization_id INTEGER,                        -- Owning entity
+    unit_name TEXT NOT NULL,                        -- Plant or unit name
+    plant_type TEXT CHECK(plant_type IN (
+        'manufacturing', 'assembly', 'processing', 'warehouse', 'service_unit', 'other'
+    )) DEFAULT 'manufacturing',
+    
+    enterprise_category TEXT CHECK(enterprise_category IN (
+        'micro', 'small', 'medium', 'large', 'unclassified'
+    )) DEFAULT 'unclassified',
+    
+    -- Physical Location
+    address TEXT,
+    industrial_area TEXT,                           -- e.g. "RIICO Industrial Area", "MIDC", "UPSIDC"
+    district TEXT,
+    state TEXT,
+    pincode TEXT,
+    
+    -- Operational Metrics (from Udyam / Factory License)
+    major_activity TEXT,                            -- e.g. "Manufacturing of Metal Products"
+    nic_code TEXT,
+    investment_in_machinery_lakhs REAL,
+    annual_turnover_lakhs REAL,
+    date_of_commencement DATE,
+    
+    raw_payload JSON,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE
 );
+
+CREATE INDEX IF NOT EXISTS idx_plants_org ON industrial_plants(organization_id);
+CREATE INDEX IF NOT EXISTS idx_plants_state_dist ON industrial_plants(state, district);
+CREATE INDEX IF NOT EXISTS idx_plants_nic ON industrial_plants(nic_code);
+CREATE INDEX IF NOT EXISTS idx_plants_category ON industrial_plants(enterprise_category);

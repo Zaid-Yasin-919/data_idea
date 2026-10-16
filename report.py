@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """
-Pipeline Status & Lead Report.
-Queries data/pipeline.db and prints a structured summary of:
-  - Total normalized entities (Organizations, Signals, Items)
-  - High-priority Buyer Intent Leads (sorted by score & deadline)
-  - Demand distribution by material and category
+Raw Business & Procurement Intelligence Reporter.
+Queries data/pipeline.db to display:
+  - Total records across all 5 raw core entities
+  - Active Tenders across departments & sectors
+  - Organizations & Ministries Directory
+  - Industrial Units & Physical Plant Footprint
 """
 
 import sqlite3
@@ -17,9 +18,9 @@ DB_PATH = Path(__file__).parent / "data" / "pipeline.db"
 
 
 def print_banner(title: str):
-    print("\n" + "=" * 75)
+    print("\n" + "=" * 78)
     print(f"  {title}")
-    print("=" * 75)
+    print("=" * 78)
 
 
 def generate_pipeline_report():
@@ -27,93 +28,93 @@ def generate_pipeline_report():
         print(f"❌ Database not found at {DB_PATH}. Run 'python ingest.py' first.")
         return
 
-    print_banner("🏛️  MORADABAD B2B MATCHMAKING PIPELINE — DATABASE REPORT")
+    print_banner("🏛️  INDIAN BUSINESS & PROCUREMENT INTELLIGENCE — DATABASE REPORT")
     print(f"  Generated at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"  Database:     {DB_PATH}")
 
     # 1. Summary Statistics
     stats = db.get_database_stats()
-    print("\n📊 1. DATABASE METRICS")
+    print("\n📊 1. RAW ENTITY METRICS")
     print("-" * 55)
-    print(f"  🏢 Organizations (Buyers/Depts)  : {stats.get('organizations', 0):>4}")
-    print(f"  📡 Total Intent Signals (Bids)   : {stats.get('intent_signals', 0):>4}")
-    print(f"  📦 Granular Line Items Demanded  : {stats.get('signal_items', 0):>4}")
-    print(f"  📞 Completed Qualification Calls : {stats.get('qualification_calls', 0):>4}")
+    print(f"  🏢 Organizations (Companies/Ministries) : {stats.get('organizations', 0):>5}")
+    print(f"  👤 Directors & Key Officers (MCA DIN)   : {stats.get('directors_officers', 0):>5}")
+    print(f"  📜 Public Tenders (GeM / CPPP)          : {stats.get('tenders', 0):>5}")
+    print(f"  📦 Tender Products & Services Line Items : {stats.get('tender_items', 0):>5}")
+    print(f"  🏭 Industrial Plants & MSME Units       : {stats.get('industrial_plants', 0):>5}")
 
     with db.get_db_connection() as conn:
-        # 2. High-Intent Leads Queue (Score >= 0.5)
-        print_banner("🎯 2. HIGH-INTENT BUYER LEADS (Ready for Qualification)")
-        high_intent_query = """
+        # 2. Active Tenders Across Sectors
+        print_banner("📜 2. LATEST PUBLIC TENDERS (Active Procurement Bids)")
+        tender_query = """
         SELECT 
-            s.id,
-            s.source,
-            s.source_ref_id,
-            s.intent_score,
-            s.signal_status,
-            s.closing_date,
-            s.source_url,
-            o.name AS buyer_name,
-            o.org_type,
-            i.item_title,
-            i.category,
-            i.material,
-            i.quantity,
-            i.unit
-        FROM intent_signals s
-        JOIN organizations o ON s.organization_id = o.id
-        LEFT JOIN signal_items i ON s.id = i.signal_id
-        WHERE s.intent_score >= 0.3
-        ORDER BY s.intent_score DESC, s.closing_date ASC
+            t.id,
+            t.source,
+            t.bid_number,
+            t.closing_date,
+            t.document_url,
+            o.name AS organization_name,
+            ti.item_name,
+            ti.item_category,
+            ti.quantity,
+            ti.unit
+        FROM tenders t
+        JOIN organizations o ON t.organization_id = o.id
+        LEFT JOIN tender_items ti ON t.id = ti.tender_id
+        ORDER BY t.created_at DESC
+        LIMIT 10;
         """
-        leads = conn.execute(high_intent_query).fetchall()
+        tenders = conn.execute(tender_query).fetchall()
 
-        if leads:
-            for idx, lead in enumerate(leads, 1):
-                score_bar = "🟢" if lead["intent_score"] >= 0.7 else "🟡"
-                qty = f"{lead['quantity']:,} {lead['unit']}" if lead['quantity'] else "N/A"
-                print(f"{idx}. {score_bar} [{lead['source'].upper()}] {lead['source_ref_id']} | Fit Score: {lead['intent_score']}")
-                print(f"   🏢 Buyer:       {lead['buyer_name']} ({lead['org_type']})")
-                print(f"   📦 Demanded:    {lead['item_title']}")
-                print(f"   🏷️  Category:    {lead['category'].upper()} | Material: {lead['material'].upper()} | Qty: {qty}")
-                print(f"   ⏰ Deadline:    {lead['closing_date'] or 'Open'}")
-                if lead['source_url']:
-                    print(f"   🔗 Link:        {lead['source_url']}")
+        if tenders:
+            for idx, tender in enumerate(tenders, 1):
+                qty = f"{tender['quantity']:,.0f} {tender['unit']}" if tender['quantity'] else "Unspecified"
+                cat = (tender['item_category'] or 'general').upper()
+                print(f"{idx:2d}. [{tender['source'].upper()}] {tender['bid_number']} | Sector: {cat}")
+                print(f"    🏢 Issuing Body: {tender['organization_name']}")
+                print(f"    📦 Demanded:     {tender['item_name']}")
+                print(f"    📊 Quantity:     {qty}")
+                print(f"    ⏰ Deadline:     {tender['closing_date'] or 'Open'}")
+                if tender['document_url']:
+                    print(f"    🔗 Link:         {tender['document_url']}")
                 print()
         else:
-            print("  No high-intent leads recorded yet.")
+            print("  No tenders recorded yet.")
 
-        # 3. Demand Breakdown by Category & Material
-        print_banner("📈 3. DEMAND BREAKDOWN")
+        # 3. Category & Sector Distribution
+        print_banner("📈 3. SECTOR & CATEGORY DISTRIBUTION (Tender Line Items)")
         cat_query = """
-        SELECT category, material, COUNT(*) as count, SUM(COALESCE(quantity, 0)) as total_qty
-        FROM signal_items
-        GROUP BY category, material
+        SELECT item_category, COUNT(*) as count, SUM(COALESCE(quantity, 0)) as total_qty
+        FROM tender_items
+        GROUP BY item_category
         ORDER BY count DESC
         """
         breakdown = conn.execute(cat_query).fetchall()
-        print(f"  {'Category':22s} | {'Material':15s} | {'Tenders':8s} | {'Total Units Demanded':20s}")
-        print("  " + "-" * 71)
+        print(f"  {'Industrial Category':32s} | {'Tenders':8s} | {'Total Units Demanded':22s}")
+        print("  " + "-" * 68)
         for row in breakdown:
-            print(f"  {row['category']:22s} | {row['material']:15s} | {row['count']:>7}  | {row['total_qty']:>18,}")
+            category_name = (row['item_category'] or 'unclassified').replace('_', ' ').title()
+            print(f"  {category_name:32s} | {row['count']:>7}  | {row['total_qty']:>20,}")
 
-        # 4. Registered Organizations
-        print_banner("🏢 4. BUYER ORGANIZATIONS IN DATABASE")
+        # 4. Registered Organizations Directory
+        print_banner("🏢 4. REGISTERED ORGANIZATIONS IN DATABASE")
         org_query = """
-        SELECT o.name, o.org_type, o.state, COUNT(s.id) as signal_count
+        SELECT o.name, o.entity_type, o.source_origin, COUNT(t.id) as tender_count
         FROM organizations o
-        LEFT JOIN intent_signals s ON o.id = s.organization_id
+        LEFT JOIN tenders t ON o.id = t.organization_id
         GROUP BY o.id
-        ORDER BY signal_count DESC
+        ORDER BY tender_count DESC
         """
         orgs = conn.execute(org_query).fetchall()
         for org in orgs:
-            print(f"  • {org['name']} ({org['org_type']}) — {org['signal_count']} active signals")
+            print(f"  • {org['name']} [{org['entity_type']}] (via {org['source_origin'].upper()}) — {org['tender_count']} tenders")
 
-    print("\n" + "=" * 75)
-    print("✨ To update data: run './venv/bin/python playwright_gem.py && ./venv/bin/python ingest.py'")
-    print("=" * 75 + "\n")
+    print("\n" + "=" * 78)
+    print("✨ Commands:")
+    print("   Run GeM Scraper  : ./venv/bin/python playwright_gem.py")
+    print("   Ingest & Normalize: ./venv/bin/python ingest.py")
+    print("   View Report      : ./venv/bin/python report.py")
+    print("=" * 78 + "\n")
 
 
 if __name__ == "__main__":
     generate_pipeline_report()
-
