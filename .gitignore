@@ -29,6 +29,7 @@ wheels/
 # Data & logs (scraped files, exports)
 data/
 *.log
+sandbox/
 
 # Environment variables & credentials
 .env
