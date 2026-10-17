@@ -51,3 +51,4 @@ class DatabaseManager:
                 except sqlite3.OperationalError:
                     stats[t] = 0
         return stats
+

@@ -20,3 +20,4 @@ class GeMScraper(BaseScraper):
         logger.info(f"Querying GeM for keyword: {keyword} (limit={limit})")
         # Base implementation placeholder for requests/playwright adapter
         return []
+

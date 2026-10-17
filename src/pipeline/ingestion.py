@@ -26,3 +26,4 @@ class IngestionPipeline:
         elif any(k in t for k in ["pipe", "valve", "pump", "casting", "sheet", "steel", "brass", "metal"]):
             return "metals_machinery"
         return "general_procurement"
+

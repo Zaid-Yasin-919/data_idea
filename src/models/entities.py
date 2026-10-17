@@ -85,3 +85,4 @@ class IndustrialPlant:
     annual_turnover_lakhs: Optional[float] = None
     date_of_commencement: Optional[str] = None
     raw_payload: Optional[Dict[str, Any]] = None
+

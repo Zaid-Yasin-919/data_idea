@@ -16,3 +16,4 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 # Application Defaults
 DEFAULT_CURRENCY = "INR"
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
+

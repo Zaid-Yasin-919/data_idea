@@ -12,3 +12,4 @@ class BaseScraper(ABC):
     def fetch_records(self, keyword: str, limit: int = 10) -> List[Dict[str, Any]]:
         """Fetch raw records matching the search criteria."""
         pass
+
